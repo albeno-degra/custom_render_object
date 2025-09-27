@@ -1,18 +1,67 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 
+const kScaleThreshold = 0.05;
+const kDistanceSquaredThreshold = 2.0;
+const kScaleStep = 0.1;
+const kMinScale = 0.1;
+const kMaxScale = 1.0;
+const kSpacing = 72.0;
+const kPointRadius = 6.0;
+const kSubpointInterval = 10.0;
+const kInitialCanvasScale = 0.5;
+const kInitialGestureScale = 1.0;
+const Color kPointColor = Colors.teal;
+
 void main() {
   runApp(
     const MaterialApp(
-      home: Scaffold(
-        body: Center(
-          child: SizedBox.expand(
-            child: InfiniteDotsGrid(),
-          ),
-        ),
-      ),
+      debugShowCheckedModeBanner: false,
+      home: Scaffold(body: InfiniteDotsGridWidget()),
     ),
   );
+}
+
+class InfiniteDotsGridWidget extends StatefulWidget {
+  const InfiniteDotsGridWidget({super.key});
+
+  @override
+  State<InfiniteDotsGridWidget> createState() => _InfiniteDotsGridWidgetState();
+}
+
+class _InfiniteDotsGridWidgetState extends State<InfiniteDotsGridWidget> {
+  final GlobalKey _gridKey = GlobalKey();
+  double _lastScale = kInitialGestureScale;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onScaleUpdate: (details) {
+        final delta = details.scale - _lastScale;
+
+        final render =
+            _gridKey.currentContext!.findRenderObject()!
+                as RenderInfiniteDotsGrid;
+
+        if (delta.abs() > kScaleThreshold) {
+          render
+            ..startScaling()
+            ..updateZoom(zoomIn: delta > 0);
+          _lastScale = details.scale;
+        }
+      },
+      onScaleEnd: (_) {
+        (_gridKey.currentContext!.findRenderObject()! as RenderInfiniteDotsGrid)
+            .stopScaling();
+        _lastScale = kInitialGestureScale;
+      },
+      child: SizedBox.expand(
+        child: InfiniteDotsGrid(
+          key: _gridKey,
+        ),
+      ),
+    );
+  }
 }
 
 class InfiniteDotsGrid extends LeafRenderObjectWidget {
@@ -25,13 +74,17 @@ class InfiniteDotsGrid extends LeafRenderObjectWidget {
 }
 
 class RenderInfiniteDotsGrid extends RenderBox {
-  final double _scale = 1;
+  final double spacing = kSpacing;
+  final double pointRadius = kPointRadius;
+  final Color pointColor = kPointColor;
+  double _scale = kInitialCanvasScale;
+
   Offset _offset = Offset.zero;
   Offset? _lastDragPos;
+  bool _isScaling = false;
 
-  final double spacing = 40;
-  final double pointRadius = 3;
-  final Color pointColor = Colors.teal;
+  void startScaling() => _isScaling = true;
+  void stopScaling() => _isScaling = false;
 
   @override
   void performLayout() {
@@ -43,11 +96,13 @@ class RenderInfiniteDotsGrid extends RenderBox {
 
   @override
   void handleEvent(PointerEvent event, HitTestEntry entry) {
+    if (_isScaling) return;
     if (event is PointerDownEvent) {
       _lastDragPos = event.localPosition;
     } else if (event is PointerMoveEvent && event.down) {
       if (_lastDragPos != null) {
         final delta = event.localPosition - _lastDragPos!;
+        if (delta.distanceSquared < kDistanceSquaredThreshold) return;
         _offset += delta;
         _lastDragPos = event.localPosition;
         markNeedsPaint();
@@ -57,25 +112,56 @@ class RenderInfiniteDotsGrid extends RenderBox {
     }
   }
 
+  void updateZoom({bool zoomIn = true}) {
+    const double step = kScaleStep;
+    _scale = _scale + (zoomIn ? step : -step);
+    _scale = double.parse(_scale.toStringAsFixed(1));
+    if (_scale > kMaxScale) {
+      _scale = kMinScale;
+    } else if (_scale < kMinScale) {
+      _scale = kMaxScale;
+    }
+
+    markNeedsPaint();
+  }
+
   @override
   void paint(PaintingContext context, Offset offset) {
     final canvas = context.canvas
       ..save()
-      ..translate(_offset.dx, _offset.dy)
-      ..scale(_scale);
+      ..translate(_offset.dx, _offset.dy);
 
     final paint = Paint()
       ..color = pointColor
       ..style = PaintingStyle.fill;
 
-    final startCol = (-_offset.dx / (_scale * spacing)).floor();
-    final endCol = ((size.width - _offset.dx) / (_scale * spacing)).ceil();
-    final startRow = (-_offset.dy / (_scale * spacing)).floor();
-    final endRow = ((size.height - _offset.dy) / (_scale * spacing)).ceil();
+    final scaledPointRadius = pointRadius * _scale;
+    final scaledSpacing = spacing * _scale;
+
+    assert(
+      scaledPointRadius > 0,
+      'Scaled point radius must be greater than zero',
+    );
+
+    final int startCol = ((-_offset.dx) / scaledSpacing).floor();
+    final int endCol = ((size.width - _offset.dx) / scaledSpacing).ceil();
+    final int startRow = ((-_offset.dy) / scaledSpacing).floor();
+    final int endRow = ((size.height - _offset.dy) / scaledSpacing).ceil();
+
     for (int row = startRow; row <= endRow; row++) {
       for (int col = startCol; col <= endCol; col++) {
-        final base = Offset(col * spacing, row * spacing);
-        canvas.drawCircle(base, pointRadius / _scale, paint);
+        final base = Offset(col * scaledSpacing, row * scaledSpacing);
+        final isSuperDot =
+            row % kSubpointInterval == 0 && col % kSubpointInterval == 0;
+
+        if (isSuperDot) {
+          canvas.drawCircle(
+            base,
+            scaledPointRadius * (scaledSpacing / scaledPointRadius),
+            paint,
+          );
+        }
+        canvas.drawCircle(base, scaledPointRadius, paint);
       }
     }
 
